@@ -6,3 +6,6 @@ build/
 *.egg-info/
 .cache/
 .vscode/
+_soundfile.py
+tst.py
+tst.wav

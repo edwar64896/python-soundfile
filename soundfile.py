@@ -8,7 +8,7 @@ Alternatively, sound files can be opened as `SoundFile` objects.
 For further information, see https://python-soundfile.readthedocs.io/.
 
 """
-__version__ = "0.12.1"
+__version__ = "0.12.2.1"
 
 import os as _os
 import sys as _sys
@@ -139,11 +139,116 @@ _default_subtypes = {
 }
 
 _ffi_types = {
-    'float64': 'double',
-    'float32': 'float',
-    'int32': 'int',
-    'int16': 'short'
+    'float64':  'double',
+    'float32':  'float',
+    'int32':    'int',
+    'int16':    'short',
+    'uint16_t': 'unsigned short',
+    'uint32_t': 'unsigined int',
+    'int64_t':  'long',
+    'uint64_t': 'unsigned long'
+
 }
+
+_commands = {
+    'SFC_GET_LIB_VERSION':              0x1000,
+	'SFC_GET_LOG_INFO':                 0x1001,
+	'SFC_GET_CURRENT_SF_INFO':          0x1002,
+	'SFC_GET_NORM_DOUBLE':              0x1010,
+	'SFC_GET_NORM_FLOAT':               0x1011,
+	'SFC_SET_NORM_DOUBLE':              0x1012,
+	'SFC_SET_NORM_FLOAT':               0x1013,
+	'SFC_SET_SCALE_FLOAT_INT_READ':     0x1014,
+	'SFC_SET_SCALE_INT_FLOAT_WRITE':    0x1015,
+
+	'SFC_GET_SIMPLE_FORMAT_COUNT':      0x1020,
+	'SFC_GET_SIMPLE_FORMAT':            0x1021,
+
+	'SFC_GET_FORMAT_INFO':              0x1028,
+
+	'SFC_GET_FORMAT_MAJOR_COUNT':       0x1030,
+	'SFC_GET_FORMAT_MAJOR':             0x1031,
+	'SFC_GET_FORMAT_SUBTYPE_COUNT':     0x1032,
+	'SFC_GET_FORMAT_SUBTYPE':           0x1033,
+
+	'SFC_CALC_SIGNAL_MAX':              0x1040,
+	'SFC_CALC_NORM_SIGNAL_MAX':         0x1041,
+	'SFC_CALC_MAX_ALL_CHANNELS':        0x1042,
+	'SFC_CALC_NORM_MAX_ALL_CHANNELS':   0x1043,
+	'SFC_GET_SIGNAL_MAX':               0x1044,
+	'SFC_GET_MAX_ALL_CHANNELS':         0x1045,
+
+	'SFC_SET_ADD_PEAK_CHUNK':           0x1050,
+
+	'SFC_UPDATE_HEADER_NOW':            0x1060,
+	'SFC_SET_UPDATE_HEADER_AUTO':       0x1061,
+
+	'SFC_FILE_TRUNCATE':                0x1080,
+
+	'SFC_SET_RAW_START_OFFSET':         0x1090,
+
+	#Commands reserved for dithering, which is not implemented.
+	'SFC_SET_DITHER_ON_WRITE':          0x10A0,
+	'SFC_SET_DITHER_ON_READ':           0x10A1,
+
+	'SFC_GET_DITHER_INFO_COUNT':        0x10A2,
+	'SFC_GET_DITHER_INFO':              0x10A3,
+
+	'SFC_GET_EMBED_FILE_INFO':          0x10B0,
+
+	'SFC_SET_CLIPPING':                 0x10C0,
+	'SFC_GET_CLIPPING':                 0x10C1,
+
+	'SFC_GET_CUE_COUNT':                0x10CD, 
+	'SFC_GET_CUE':                      0x10CE,
+	'SFC_SET_CUE':                      0x10CF,
+
+	'SFC_GET_INSTRUMENT':               0x10D0,
+	'SFC_SET_INSTRUMENT':               0x10D1,
+
+	'SFC_GET_LOOP_INFO':                0x10E0,
+
+	'SFC_GET_BROADCAST_INFO':           0x10F0, #
+	'SFC_SET_BROADCAST_INFO':           0x10F1,
+
+	'SFC_GET_CHANNEL_MAP_INFO':         0x1100,
+	'SFC_SET_CHANNEL_MAP_INFO':         0x1101,
+
+	'SFC_RAW_DATA_NEEDS_ENDSWAP':       0x1110,
+
+	#Support for Wavex Ambisonics Format */
+	'SFC_WAVEX_SET_AMBISONIC':          0x1200,
+	'SFC_WAVEX_GET_AMBISONIC':          0x1201,
+
+	'SFC_RF64_AUTO_DOWNGRADE':          0x1210,
+
+	'SFC_SET_VBR_ENCODING_QUALITY':     0x1300,
+	'SFC_SET_COMPRESSION_LEVEL':        0x1301,
+
+	#/* Ogg format commands */
+	'SFC_SET_OGG_PAGE_LATENCY_MS':      0x1302,
+	'SFC_SET_OGG_PAGE_LATENCY':         0x1303,
+	'SFC_GET_OGG_STREAM_SERIALNO':      0x1306,
+
+	'SFC_GET_BITRATE_MODE':             0x1304,
+	'SFC_SET_BITRATE_MODE':             0x1305,
+
+	#/* Cart Chunk support */
+	'SFC_SET_CART_INFO':                0x1400,
+	'SFC_GET_CART_INFO':                0x1401,
+
+	#/* Opus files original samplerate metadata */
+	'SFC_SET_ORIGINAL_SAMPLERATE':      0x1500,
+	'SFC_GET_ORIGINAL_SAMPLERATE':      0x1501,
+
+	#/* Following commands for testing only. */
+	'SFC_TEST_IEEE_FLOAT_REPLACE':      0x6001,
+
+	'SFC_SET_ADD_HEADER_PAD_CHUNK':     0x1051,
+
+	'SFC_SET_ADD_DITHER_ON_WRITE':      0x1070,
+	'SFC_SET_ADD_DITHER_ON_READ':       0x1071
+} 
 
 try:  # packaged lib (in _soundfile_data which should be on python path)
     if _sys.platform == 'darwin':
@@ -422,6 +527,24 @@ class _SoundFileInfo(object):
             self.subtype_info = f.subtype_info
             self.sections = f.sections
             self.extra_info = f.extra_info
+            self.broadcast_info = None
+            self.ixml = None
+
+            try:
+                with _SoundFileInfo.BroadcastInfo(f) as bi:
+                    self.broadcast_info=bi
+            except:
+                pass
+
+            try:
+                with _SoundFileInfo.IXML(f) as _ixml:
+                    self.ixml = _ixml
+            except:
+                pass
+
+    def create_broadcast_info(self):
+        self.broadcast_info = _soundFileInfo.BroadcastInfo()
+
 
     @property
     def _duration_str(self):
@@ -454,7 +577,299 @@ class _SoundFileInfo(object):
                  '    {1}"""'])
         indented_extra_info = ("\n"+" "*4).join(self.extra_info.split("\n"))
         return info.format(self, indented_extra_info)
+    
+    class IXML(object):
+        def __init__(self,file=None):
+            self._file=file
+            self._ixml=None
+            self._ixml_data_ptr=None
+            self.char_buffer=None
+            if file is None:
+                self._ixml=self.create_ixml_chunk()
+            else:
+                self._ixml=self.get_ixml_data()
+                if self._ixml is None:
+                    raise ("no ixml chunk available")
 
+        ixml            = property(lambda self: self._ixml)
+
+        #@data.setter
+        #def data(self,newValue):
+        """
+        Property Setter for ixml data. 
+        """
+        #    c_string = newValue.encode('utf-8') + b'\x00'
+        #    assert len(self.ixml.data) >= len(c_string), "Buffer is too small for the string"
+        #    _ffi.memmove(self.ixml.data, c_string, len(c_string))
+
+        def __enter__(self):
+            # Initialize or acquire resource (e.g., open a file, connect to a database, etc.)
+            # Return self or another resource that should be used in the with-block
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            # Clean up the resource (e.g., close a file, disconnect from a database, etc.)
+            # You can also handle exceptions here if necessary
+            # If you return True, any exception will be suppressed
+            pass
+        
+        def __repr__(self):
+            info = "\n".join(
+                ["data: {0._ixml}"])
+
+            indented_extra_info = ("\n"+" "*4)
+            return info.format(self, indented_extra_info)
+
+        def get_ixml_data(self):
+            """Retrieve ixml chunk"""
+            chunk_info = _ffi.new("SF_CHUNK_INFO*")
+            chunk_info.id = "iXML".encode('utf-8')
+            chunk_info.id_size = 4
+            iterator = _snd.sf_get_chunk_iterator (self._file._file, chunk_info)
+            if (iterator is not None):
+                _snd.sf_get_chunk_size(iterator,chunk_info)
+                buffer_size = chunk_info.datalen
+
+                self.char_buffer = _ffi.new("char[]", buffer_size)
+                chunk_info.data = self.char_buffer
+
+                _snd.sf_get_chunk_data(iterator,chunk_info)
+                return _ffi.string(self.char_buffer).decode('utf-8')
+            else:
+                return ""            
+            
+        def create_ixml_chunk(self):
+            pass
+            #info = _ffi.new("SF_BROADCAST_INFO*")
+            #return info
+
+        def set_ixml_data(self):
+            """store ixml chunk (BEXT)"""
+            chunk_info = _ffi.new("SF_CHUNK_INFO*")
+            chunk_info.id = "ixml".encode('utf-8')
+            chunk_info.length = 4
+            
+            self._ixml_data_ptr=self._ixml.encode('utf-8')+b"0x00"
+            chunk_info.datalen=len(self._ixml_data_ptr)
+
+            # scope of this element could be an issue if crashing occurs.
+            chunk_info.data = _ffi.from_buffer("char[]", self._ixml_data_ptr)
+
+            _snd.sf_set_chunk(self._file._file, chunk_info)
+
+
+
+
+    class BroadcastInfo(object):
+        def __init__(self,file=None):
+            self.bi=None
+            if file is None:
+                self.bi=self.create_broadcast_info()
+            else:
+                self.bi=self.get_broadcast_info(file)
+                if self.bi is None:
+                    raise ("no BEXT chunk available")
+            
+        description            = property(lambda self: _ffi.string(self.bi.description).decode('utf-8'))
+        originator             = property(lambda self: _ffi.string(self.bi.originator).decode('utf-8'))
+        originator_reference   = property(lambda self: _ffi.string(self.bi.originator_reference).decode('utf-8'))
+        origination_date       = property(lambda self: _ffi.string(self.bi.origination_date).decode('utf-8'))
+        origination_time       = property(lambda self: _ffi.string(self.bi.origination_time).decode('utf-8'))
+        time_reference         = property(lambda self: (self.bi.time_reference_high << 32) | self.bi.time_reference_low)
+        version                = property(lambda self: self.bi.version)
+        umid                   = property(lambda self: _ffi.string(self.bi.umid).decode('utf-8'))
+        loudness_value         = property(lambda self: self.bi.loudness_value)
+        loudness_range         = property(lambda self: self.bi.loudness_range)
+        max_true_peak_level    = property(lambda self: self.bi.max_true_peak_level)
+        max_momentary_loudness = property(lambda self: self.bi.max_momentary_loudness)
+        max_shortterm_loudness = property(lambda self: self.bi.max_shortterm_loudness)
+        reserved               = property(lambda self: _ffi.string(self.bi.description).decode('utf-8'))
+        coding_history_size    = property(lambda self: self.bi.coding_history_size)
+        coding_history         = property(lambda self: _ffi.string(self.bi.coding_history).decode('utf-8'))
+
+        @description.setter
+        def description(self,newValue):
+            """
+            Property Setter for description. (char[256] array)
+            """
+            c_string = newValue.encode('utf-8') + b'\x00'
+            assert len(self.bi.description) >= len(c_string), "Buffer is too small for the string"
+            _ffi.memmove(self.bi.description, c_string, len(c_string))
+
+        @originator.setter
+        def originator(self,newValue):
+            """
+            Property Setter for originator. (char[32] array)
+            """
+            c_string = newValue.encode('utf-8') + b'\x00'
+            assert len(self.bi.originator) >= len(c_string), "Buffer is too small for the string"
+            _ffi.memmove(self.bi.originator, c_string, len(c_string))
+
+        @originator_reference.setter
+        def originator_reference(self,newValue):
+            """
+            Property Setter for originator_reference. (char[32] array)
+            """
+            c_string = newValue.encode('utf-8') + b'\x00'
+            assert len(self.bi.originator_reference) >= len(c_string), "Buffer is too small for the string"
+            _ffi.memmove(self.bi.originator_reference, c_string, len(c_string))
+
+        @origination_date.setter
+        def origination_date(self,newValue):
+            """
+            Property Setter for origination_date. (char[10] array)
+            """
+            c_string = newValue.encode('utf-8') + b'\x00'
+            assert len(self.bi.origination_date) >= len(c_string), "Buffer is too small for the string"
+            _ffi.memmove(self.bi.origination_date, c_string, len(c_string))
+                   
+        @origination_time.setter
+        def origination_time(self,newValue):
+            """
+            Property Setter for origination_time. (char[8] array)
+            """
+            c_string = newValue.encode('utf-8') + b'\x00'
+            assert len(self.bi.origination_time) >= len(c_string), "Buffer is too small for the string"
+            _ffi.memmove(self.bi.origination_time, c_string, len(c_string))
+                   
+        @time_reference.setter
+        def time_reference(self,newValue):
+            """
+            Property Setter for time_reference.
+            """
+            mask=0xFFFFFFFF00000000
+            self.bi.time_reference_low=(newValue & ~mask)
+            self.bi.time_reference_high=(newValue & mask) >> 32
+                     
+        @version.setter
+        def version(self,newValue):
+            """
+            Property Setter for version.
+            """
+            self.bi.version=newValue
+                            
+        @umid.setter
+        def umid(self,newValue):
+            """
+            Property Setter for umid. (char[64] array)
+            """
+            c_string = newValue.encode('utf-8') + b'\x00'
+            assert len(self.bi.umid) >= len(c_string), "Buffer is too small for the string"
+            _ffi.memmove(self.bi.umid, c_string, len(c_string))
+
+        @loudness_value.setter
+        def loudness_value(self,newValue):
+            """
+            Property Setter for loudness_value.
+            """
+            self.bi.loudness_value=newValue
+
+        @loudness_range.setter
+        def loudness_range(self,newValue):
+            """
+            Property Setter for loudness_range.
+            """
+            self.bi.loudness_range=newValue
+             
+        @max_true_peak_level.setter
+        def max_true_peak_level(self,newValue):
+            """
+            Property Setter for max_true_peak_level.
+            """
+            self.bi.max_true_peak_level=newValue
+                
+        @max_momentary_loudness.setter
+        def max_momentary_loudness(self,newValue):
+            """
+            Property Setter for max_momentary_loudness.
+            """
+            self.bi.max_momentary_loudness=newValue
+             
+        @max_shortterm_loudness.setter
+        def max_shortterm_loudness(self,newValue):
+            """
+            Property Setter for max_shortterm_loudness.
+            """
+            self.bi.max_shortterm_loudness=newValue
+             
+        @reserved.setter
+        def reserved(self,newValue):
+            """
+            Property Setter for reserved. (char[180] array)
+            """
+            c_string = newValue.encode('utf-8') + b'\x00'
+            assert len(self.bi.reserved) >= len(c_string), "Buffer is too small for the string"
+            _ffi.memmove(self.bi.reserved, c_string, len(c_string))
+                           
+        @coding_history_size.setter
+        def coding_history_size(self,newValue):
+            """
+            Property Setter for coding_history_size.
+            Note, Coding_history_size is also set automatically when the coding_history property is set.
+            """
+            self.bi.coding_history_size=newValue
+                
+        @coding_history.setter
+        def coding_history(self,newValue):
+            """
+            Property Setter for coding_history. (char[256] array)
+            also sets coding_history_size automatically.
+            """
+            c_string = newValue.encode('utf-8') + b'\x00'
+            assert len(self.bi.coding_history) >= len(c_string), "Buffer is too small for the string"
+            _ffi.memmove(self.bi.coding_history, c_string, len(c_string))
+            self.bi.coding_history_size=len(c_string)
+                     
+
+        def __enter__(self):
+            # Initialize or acquire resource (e.g., open a file, connect to a database, etc.)
+            # Return self or another resource that should be used in the with-block
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            # Clean up the resource (e.g., close a file, disconnect from a database, etc.)
+            # You can also handle exceptions here if necessary
+            # If you return True, any exception will be suppressed
+            pass
+        
+        def __repr__(self):
+            info = "\n".join(
+                ["description: {0.description}",
+                 "originator: {0.originator}",
+                 "originator_reference: {0.originator_reference}",
+                 "time_reference: {0.time_reference}",
+                 "version: {0.version}",
+                 "umid: {0.umid}",
+                 "loudness_value: {0.loudness_value}",
+                 "loudness_range: {0.loudness_range}",
+                 "max_true_peak_level: {0.max_true_peak_level}",
+                 "max_momentary_loudness: {0.max_momentary_loudness}",
+                 "max_shortterm_loudness: {0.max_shortterm_loudness}",
+                 "reserved: {0.reserved}",
+                 "coding_history_size: {0.coding_history_size}",
+                 "coding_history: {0.coding_history}"])
+
+            indented_extra_info = ("\n"+" "*4)
+            return info.format(self, indented_extra_info)
+
+        def get_broadcast_info(self,_file):
+            """Retrieve broadcast info chunk (BEXT)"""
+            info = self.create_broadcast_info_struct()
+            if _snd.sf_command(_file._file, _snd.SFC_GET_BROADCAST_INFO,
+                            info, _ffi.sizeof("SF_BROADCAST_INFO")):
+                return info
+            else:
+                return None
+
+        def create_broadcast_info_struct(self):
+            info = _ffi.new("SF_BROADCAST_INFO*")
+            return info
+
+        def set_broadcast_info(self):
+            """Retrieve broadcast info chunk (BEXT)"""
+            retval = _snd.sf_command(self._file, _snd.SFC_SET_BROADCAST_INFO,
+                            self.bi, _ffi.sizeof("SF_BROADCAST_INFO"))
+            return retval
 
 def info(file, verbose=False):
     """Returns an object with information about a `SoundFile`.
@@ -703,6 +1118,39 @@ class SoundFile(object):
         _snd.sf_command(self._file, _snd.SFC_GET_LOG_INFO,
                         info, _ffi.sizeof(info))
         return _ffi.string(info).decode('utf-8', 'replace')
+    
+    def get_cue_count(self):
+        """Retrieve count of cues contained within file"""
+        info = _ffi.new("uint32 *")
+        _snd.sf_command(self._file, _snd.SFC_GET_CUE_COUNT,
+                        info, _ffi.sizeof(info))
+        return info
+    
+    def create_cue_struct(self):
+        info = _ffi.new("SF_CUES *")
+        return info
+    
+    def set_cue(self,cue):
+        """Retrieve cues"""
+        retval = _snd.sf_command(self._file, _snd.SFC_GET_CUE,
+                        cue, _ffi.sizeof(cue))
+        return retval
+    
+    def get_cue(self):
+        """Retrieve cues"""
+        info = _ffi.new("SF_CUES *")
+        if _snd.sf_command(self._file, _snd.SFC_GET_CUE,
+                        info, _ffi.sizeof(info)):
+            return info
+        else:
+            return None
+        
+    def get_cart_info(self):
+        """Retrieve cart info chunk"""
+        info = _ffi.new("SF_CART_INFO *")
+        _snd.sf_command(self._file, _snd.SFC_GET_CART_INFO,
+                        info, _ffi.sizeof(info))
+        return info
 
     # avoid confusion if something goes wrong before assigning self._file:
     _file = None
