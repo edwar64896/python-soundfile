@@ -15,6 +15,11 @@ import sys as _sys
 from os import SEEK_SET, SEEK_CUR, SEEK_END
 from ctypes.util import find_library as _find_library
 from _soundfile import ffi as _ffi
+import struct
+import xml.etree.ElementTree as ET
+from xml.etree.ElementTree import Element, tostring
+from xml.dom.minidom import parseString
+from collections import defaultdict
 
 try:
     _unicode = unicode  # doesn't exist in Python 3.x
@@ -585,7 +590,7 @@ class _SoundFileInfo(object):
             self._ixml_data_ptr=None
             self.char_buffer=None
             if file is None:
-                self._ixml=self.create_ixml_chunk()
+                self._ixml={"BWFXML": None}
             else:
                 self._ixml=self.get_ixml_data()
                 if self._ixml is None:
@@ -593,14 +598,79 @@ class _SoundFileInfo(object):
 
         ixml            = property(lambda self: self._ixml)
 
-        #@data.setter
-        #def data(self,newValue):
-        """
-        Property Setter for ixml data. 
-        """
-        #    c_string = newValue.encode('utf-8') + b'\x00'
-        #    assert len(self.ixml.data) >= len(c_string), "Buffer is too small for the string"
-        #    _ffi.memmove(self.ixml.data, c_string, len(c_string))
+        @ixml.setter
+        def ixml(self,newValue):
+            """
+            Property Setter for ixml dict. 
+            """
+            # convert to XML string
+
+            root = self.dict_to_xml(None,newValue)
+            newxml = self.prettify(root)
+
+            self._chunk_info = _ffi.new("SF_CHUNK_INFO *")
+            self._chunk_info.id="iXML".encode('utf-8')
+            self._chunk_info.id_size=4
+            self._chunk_info.data = _ffi.new("char []", newxml.encode('utf-8'))
+            self._chunk_info.datalen= _ffi.sizeof(self._chunk_info.data)
+
+
+
+        def parse_ixml_chunk(self, chunk_data):
+            try:
+                # Parse the XML data
+                root = ET.fromstring(chunk_data)
+                return self.xml_to_dict(root)
+            except ET.ParseError:
+                return None
+                
+        def xml_to_dict(self, root, tree_dict=None):
+            if tree_dict is None:
+                tree_dict = defaultdict(list)  # Change to list for handling multiple elements
+
+            for element in root:
+                if len(element):  # If the element has children
+                    child_dict = self.xml_to_dict(element, None)
+                    tree_dict[element.tag].append(child_dict)
+                else:
+                    tree_dict[element.tag].append(element.text)
+
+            # Convert single-item lists to just the item
+            for key in tree_dict:
+                if len(tree_dict[key]) == 1:
+                    tree_dict[key] = tree_dict[key][0]
+
+            return tree_dict
+
+        
+        def dict_to_xml(tag, d):
+            '''
+            Turn a simple dict of key/value pairs into XML.
+            Handles nested dictionaries and lists of dictionaries.
+            '''
+            elem = Element(tag)
+            for key, val in d.items():
+                if isinstance(val, dict):
+                    child = dict_to_xml(key, val)
+                elif isinstance(val, list):
+                    # Handle lists of dictionaries
+                    for subdict in val:
+                        child = dict_to_xml(key, subdict)
+                        elem.append(child)
+                    continue  # Skip the elem.append(child) at the end
+                else:
+                    child = Element(key)
+                    child.text = str(val) if val is not None else ''
+                elem.append(child)
+            return elem
+
+        def prettify(elem):
+            '''
+            Return a pretty-printed XML string for the Element.
+            '''
+            rough_string = tostring(elem, 'utf-8')
+            reparsed = parseString(rough_string)
+            return reparsed.toxml(encoding='UTF-8').decode('UTF-8')            
 
         def __enter__(self):
             # Initialize or acquire resource (e.g., open a file, connect to a database, etc.)
@@ -614,12 +684,9 @@ class _SoundFileInfo(object):
             pass
         
         def __repr__(self):
-            info = "\n".join(
-                ["data: {0._ixml}"])
-
-            indented_extra_info = ("\n"+" "*4)
-            return info.format(self, indented_extra_info)
-
+            dict_repr = repr(self._ixml)
+            return f"{self.__class__.__name__}({dict_repr})"
+    
         def get_ixml_data(self):
             """Retrieve ixml chunk"""
             chunk_info = _ffi.new("SF_CHUNK_INFO*")
@@ -634,7 +701,7 @@ class _SoundFileInfo(object):
                 chunk_info.data = self.char_buffer
 
                 _snd.sf_get_chunk_data(iterator,chunk_info)
-                return _ffi.string(self.char_buffer).decode('utf-8')
+                return self.parse_ixml_chunk(_ffi.string(self.char_buffer).decode('utf-8'))
             else:
                 return ""            
             
@@ -656,8 +723,6 @@ class _SoundFileInfo(object):
             chunk_info.data = _ffi.from_buffer("char[]", self._ixml_data_ptr)
 
             _snd.sf_set_chunk(self._file._file, chunk_info)
-
-
 
 
     class BroadcastInfo(object):
