@@ -14,7 +14,7 @@ import os as _os
 import sys as _sys
 from os import SEEK_SET, SEEK_CUR, SEEK_END
 from ctypes.util import find_library as _find_library
-from _soundfile import ffi as _ffi
+from ._soundfile import ffi as _ffi
 import struct
 import xml.etree.ElementTree as ET
 from xml.etree.ElementTree import Element, tostring
@@ -268,7 +268,7 @@ try:  # packaged lib (in _soundfile_data which should be on python path)
     else:
         raise OSError('no packaged library for this platform')
 
-    import _soundfile_data  # ImportError if this doesn't exist
+    from . import _soundfile_data  # ImportError if this doesn't exist
     _path = _os.path.dirname(_soundfile_data.__file__)  # TypeError if __file__ is None
     _full_path = _os.path.join(_path, _packaged_libname)
     _snd = _ffi.dlopen(_full_path)  # OSError if file doesn't exist or can't be loaded
@@ -514,427 +514,6 @@ def blocks(file, blocksize=None, overlap=0, frames=-1, start=0, stop=None,
             yield block
 
 
-class _SoundFileInfo(object):
-    """Information about a SoundFile"""
-
-    def __init__(self, file, verbose):
-        self.verbose = verbose
-        with SoundFile(file) as f:
-            self.name = f.name
-            self.samplerate = f.samplerate
-            self.channels = f.channels
-            self.frames = f.frames
-            self.duration = float(self.frames)/f.samplerate
-            self.format = f.format
-            self.subtype = f.subtype
-            self.endian = f.endian
-            self.format_info = f.format_info
-            self.subtype_info = f.subtype_info
-            self.sections = f.sections
-            self.extra_info = f.extra_info
-            self.broadcast_info = None
-            self.ixml = None
-
-            try:
-                with _SoundFileInfo.BroadcastInfo(f) as bi:
-                    self.broadcast_info=bi
-            except:
-                pass
-
-            try:
-                with _SoundFileInfo.IXML(f) as _ixml:
-                    self.ixml = _ixml
-            except:
-                pass
-
-    def create_broadcast_info(self):
-        self.broadcast_info = _soundFileInfo.BroadcastInfo()
-
-
-    @property
-    def _duration_str(self):
-        hours, rest = divmod(self.duration, 3600)
-        minutes, seconds = divmod(rest, 60)
-        if hours >= 1:
-            duration = "{0:.0g}:{1:02.0g}:{2:05.3f} h".format(hours, minutes, seconds)
-        elif minutes >= 1:
-            duration = "{0:02.0g}:{1:05.3f} min".format(minutes, seconds)
-        elif seconds <= 1:
-            duration = "{0:d} samples".format(self.frames)
-        else:
-            duration = "{0:.3f} s".format(seconds)
-        return duration
-
-    def __repr__(self):
-        info = "\n".join(
-            ["{0.name}",
-             "samplerate: {0.samplerate} Hz",
-             "channels: {0.channels}",
-             "duration: {0._duration_str}",
-             "format: {0.format_info} [{0.format}]",
-             "subtype: {0.subtype_info} [{0.subtype}]"])
-        if self.verbose:
-            info += "\n".join(
-                ["\nendian: {0.endian}",
-                 "sections: {0.sections}",
-                 "frames: {0.frames}",
-                 'extra_info: """',
-                 '    {1}"""'])
-        indented_extra_info = ("\n"+" "*4).join(self.extra_info.split("\n"))
-        return info.format(self, indented_extra_info)
-    
-    class IXML(object):
-        def __init__(self,file=None):
-            self._file=file
-            self._ixml=None
-            self._ixml_data_ptr=None
-            self.char_buffer=None
-            if file is None:
-                self._ixml={"BWFXML": None}
-            else:
-                self._ixml=self.get_ixml_data()
-                if self._ixml is None:
-                    raise ("no ixml chunk available")
-
-        ixml            = property(lambda self: self._ixml)
-
-        @ixml.setter
-        def ixml(self,newValue):
-            """
-            Property Setter for ixml dict. 
-            """
-            # convert to XML string
-
-            root = self.dict_to_xml(None,newValue)
-            newxml = self.prettify(root)
-
-            self._chunk_info = _ffi.new("SF_CHUNK_INFO *")
-            self._chunk_info.id="iXML".encode('utf-8')
-            self._chunk_info.id_size=4
-            self._chunk_info.data = _ffi.new("char []", newxml.encode('utf-8'))
-            self._chunk_info.datalen= _ffi.sizeof(self._chunk_info.data)
-
-
-
-        def parse_ixml_chunk(self, chunk_data):
-            try:
-                # Parse the XML data
-                root = ET.fromstring(chunk_data)
-                return self.xml_to_dict(root)
-            except ET.ParseError:
-                return None
-                
-        def xml_to_dict(self, root, tree_dict=None):
-            if tree_dict is None:
-                tree_dict = defaultdict(list)  # Change to list for handling multiple elements
-
-            for element in root:
-                if len(element):  # If the element has children
-                    child_dict = self.xml_to_dict(element, None)
-                    tree_dict[element.tag].append(child_dict)
-                else:
-                    tree_dict[element.tag].append(element.text)
-
-            # Convert single-item lists to just the item
-            for key in tree_dict:
-                if len(tree_dict[key]) == 1:
-                    tree_dict[key] = tree_dict[key][0]
-
-            return tree_dict
-
-        
-        def dict_to_xml(tag, d):
-            '''
-            Turn a simple dict of key/value pairs into XML.
-            Handles nested dictionaries and lists of dictionaries.
-            '''
-            elem = Element(tag)
-            for key, val in d.items():
-                if isinstance(val, dict):
-                    child = dict_to_xml(key, val)
-                elif isinstance(val, list):
-                    # Handle lists of dictionaries
-                    for subdict in val:
-                        child = dict_to_xml(key, subdict)
-                        elem.append(child)
-                    continue  # Skip the elem.append(child) at the end
-                else:
-                    child = Element(key)
-                    child.text = str(val) if val is not None else ''
-                elem.append(child)
-            return elem
-
-        def prettify(elem):
-            '''
-            Return a pretty-printed XML string for the Element.
-            '''
-            rough_string = tostring(elem, 'utf-8')
-            reparsed = parseString(rough_string)
-            return reparsed.toxml(encoding='UTF-8').decode('UTF-8')            
-
-        def __enter__(self):
-            # Initialize or acquire resource (e.g., open a file, connect to a database, etc.)
-            # Return self or another resource that should be used in the with-block
-            return self
-
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            # Clean up the resource (e.g., close a file, disconnect from a database, etc.)
-            # You can also handle exceptions here if necessary
-            # If you return True, any exception will be suppressed
-            pass
-        
-        def __repr__(self):
-            dict_repr = repr(self._ixml)
-            return f"{self.__class__.__name__}({dict_repr})"
-    
-        def get_ixml_data(self):
-            """Retrieve ixml chunk"""
-            chunk_info = _ffi.new("SF_CHUNK_INFO*")
-            chunk_info.id = "iXML".encode('utf-8')
-            chunk_info.id_size = 4
-            iterator = _snd.sf_get_chunk_iterator (self._file._file, chunk_info)
-            if (iterator is not None):
-                _snd.sf_get_chunk_size(iterator,chunk_info)
-                buffer_size = chunk_info.datalen
-
-                self.char_buffer = _ffi.new("char[]", buffer_size)
-                chunk_info.data = self.char_buffer
-
-                _snd.sf_get_chunk_data(iterator,chunk_info)
-                return self.parse_ixml_chunk(_ffi.string(self.char_buffer).decode('utf-8'))
-            else:
-                return ""            
-            
-        def create_ixml_chunk(self):
-            pass
-            #info = _ffi.new("SF_BROADCAST_INFO*")
-            #return info
-
-        def set_ixml_data(self):
-            """store ixml chunk (BEXT)"""
-            chunk_info = _ffi.new("SF_CHUNK_INFO*")
-            chunk_info.id = "ixml".encode('utf-8')
-            chunk_info.length = 4
-            
-            self._ixml_data_ptr=self._ixml.encode('utf-8')+b"0x00"
-            chunk_info.datalen=len(self._ixml_data_ptr)
-
-            # scope of this element could be an issue if crashing occurs.
-            chunk_info.data = _ffi.from_buffer("char[]", self._ixml_data_ptr)
-
-            _snd.sf_set_chunk(self._file._file, chunk_info)
-
-
-    class BroadcastInfo(object):
-        def __init__(self,file=None):
-            self.bi=None
-            if file is None:
-                self.bi=self.create_broadcast_info()
-            else:
-                self.bi=self.get_broadcast_info(file)
-                if self.bi is None:
-                    raise ("no BEXT chunk available")
-            
-        description            = property(lambda self: _ffi.string(self.bi.description).decode('utf-8'))
-        originator             = property(lambda self: _ffi.string(self.bi.originator).decode('utf-8'))
-        originator_reference   = property(lambda self: _ffi.string(self.bi.originator_reference).decode('utf-8'))
-        origination_date       = property(lambda self: _ffi.string(self.bi.origination_date).decode('utf-8'))
-        origination_time       = property(lambda self: _ffi.string(self.bi.origination_time).decode('utf-8'))
-        time_reference         = property(lambda self: (self.bi.time_reference_high << 32) | self.bi.time_reference_low)
-        version                = property(lambda self: self.bi.version)
-        umid                   = property(lambda self: _ffi.string(self.bi.umid).decode('utf-8'))
-        loudness_value         = property(lambda self: self.bi.loudness_value)
-        loudness_range         = property(lambda self: self.bi.loudness_range)
-        max_true_peak_level    = property(lambda self: self.bi.max_true_peak_level)
-        max_momentary_loudness = property(lambda self: self.bi.max_momentary_loudness)
-        max_shortterm_loudness = property(lambda self: self.bi.max_shortterm_loudness)
-        reserved               = property(lambda self: _ffi.string(self.bi.description).decode('utf-8'))
-        coding_history_size    = property(lambda self: self.bi.coding_history_size)
-        coding_history         = property(lambda self: _ffi.string(self.bi.coding_history).decode('utf-8'))
-
-        @description.setter
-        def description(self,newValue):
-            """
-            Property Setter for description. (char[256] array)
-            """
-            c_string = newValue.encode('utf-8') + b'\x00'
-            assert len(self.bi.description) >= len(c_string), "Buffer is too small for the string"
-            _ffi.memmove(self.bi.description, c_string, len(c_string))
-
-        @originator.setter
-        def originator(self,newValue):
-            """
-            Property Setter for originator. (char[32] array)
-            """
-            c_string = newValue.encode('utf-8') + b'\x00'
-            assert len(self.bi.originator) >= len(c_string), "Buffer is too small for the string"
-            _ffi.memmove(self.bi.originator, c_string, len(c_string))
-
-        @originator_reference.setter
-        def originator_reference(self,newValue):
-            """
-            Property Setter for originator_reference. (char[32] array)
-            """
-            c_string = newValue.encode('utf-8') + b'\x00'
-            assert len(self.bi.originator_reference) >= len(c_string), "Buffer is too small for the string"
-            _ffi.memmove(self.bi.originator_reference, c_string, len(c_string))
-
-        @origination_date.setter
-        def origination_date(self,newValue):
-            """
-            Property Setter for origination_date. (char[10] array)
-            """
-            c_string = newValue.encode('utf-8') + b'\x00'
-            assert len(self.bi.origination_date) >= len(c_string), "Buffer is too small for the string"
-            _ffi.memmove(self.bi.origination_date, c_string, len(c_string))
-                   
-        @origination_time.setter
-        def origination_time(self,newValue):
-            """
-            Property Setter for origination_time. (char[8] array)
-            """
-            c_string = newValue.encode('utf-8') + b'\x00'
-            assert len(self.bi.origination_time) >= len(c_string), "Buffer is too small for the string"
-            _ffi.memmove(self.bi.origination_time, c_string, len(c_string))
-                   
-        @time_reference.setter
-        def time_reference(self,newValue):
-            """
-            Property Setter for time_reference.
-            """
-            mask=0xFFFFFFFF00000000
-            self.bi.time_reference_low=(newValue & ~mask)
-            self.bi.time_reference_high=(newValue & mask) >> 32
-                     
-        @version.setter
-        def version(self,newValue):
-            """
-            Property Setter for version.
-            """
-            self.bi.version=newValue
-                            
-        @umid.setter
-        def umid(self,newValue):
-            """
-            Property Setter for umid. (char[64] array)
-            """
-            c_string = newValue.encode('utf-8') + b'\x00'
-            assert len(self.bi.umid) >= len(c_string), "Buffer is too small for the string"
-            _ffi.memmove(self.bi.umid, c_string, len(c_string))
-
-        @loudness_value.setter
-        def loudness_value(self,newValue):
-            """
-            Property Setter for loudness_value.
-            """
-            self.bi.loudness_value=newValue
-
-        @loudness_range.setter
-        def loudness_range(self,newValue):
-            """
-            Property Setter for loudness_range.
-            """
-            self.bi.loudness_range=newValue
-             
-        @max_true_peak_level.setter
-        def max_true_peak_level(self,newValue):
-            """
-            Property Setter for max_true_peak_level.
-            """
-            self.bi.max_true_peak_level=newValue
-                
-        @max_momentary_loudness.setter
-        def max_momentary_loudness(self,newValue):
-            """
-            Property Setter for max_momentary_loudness.
-            """
-            self.bi.max_momentary_loudness=newValue
-             
-        @max_shortterm_loudness.setter
-        def max_shortterm_loudness(self,newValue):
-            """
-            Property Setter for max_shortterm_loudness.
-            """
-            self.bi.max_shortterm_loudness=newValue
-             
-        @reserved.setter
-        def reserved(self,newValue):
-            """
-            Property Setter for reserved. (char[180] array)
-            """
-            c_string = newValue.encode('utf-8') + b'\x00'
-            assert len(self.bi.reserved) >= len(c_string), "Buffer is too small for the string"
-            _ffi.memmove(self.bi.reserved, c_string, len(c_string))
-                           
-        @coding_history_size.setter
-        def coding_history_size(self,newValue):
-            """
-            Property Setter for coding_history_size.
-            Note, Coding_history_size is also set automatically when the coding_history property is set.
-            """
-            self.bi.coding_history_size=newValue
-                
-        @coding_history.setter
-        def coding_history(self,newValue):
-            """
-            Property Setter for coding_history. (char[256] array)
-            also sets coding_history_size automatically.
-            """
-            c_string = newValue.encode('utf-8') + b'\x00'
-            assert len(self.bi.coding_history) >= len(c_string), "Buffer is too small for the string"
-            _ffi.memmove(self.bi.coding_history, c_string, len(c_string))
-            self.bi.coding_history_size=len(c_string)
-                     
-
-        def __enter__(self):
-            # Initialize or acquire resource (e.g., open a file, connect to a database, etc.)
-            # Return self or another resource that should be used in the with-block
-            return self
-
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            # Clean up the resource (e.g., close a file, disconnect from a database, etc.)
-            # You can also handle exceptions here if necessary
-            # If you return True, any exception will be suppressed
-            pass
-        
-        def __repr__(self):
-            info = "\n".join(
-                ["description: {0.description}",
-                 "originator: {0.originator}",
-                 "originator_reference: {0.originator_reference}",
-                 "time_reference: {0.time_reference}",
-                 "version: {0.version}",
-                 "umid: {0.umid}",
-                 "loudness_value: {0.loudness_value}",
-                 "loudness_range: {0.loudness_range}",
-                 "max_true_peak_level: {0.max_true_peak_level}",
-                 "max_momentary_loudness: {0.max_momentary_loudness}",
-                 "max_shortterm_loudness: {0.max_shortterm_loudness}",
-                 "reserved: {0.reserved}",
-                 "coding_history_size: {0.coding_history_size}",
-                 "coding_history: {0.coding_history}"])
-
-            indented_extra_info = ("\n"+" "*4)
-            return info.format(self, indented_extra_info)
-
-        def get_broadcast_info(self,_file):
-            """Retrieve broadcast info chunk (BEXT)"""
-            info = self.create_broadcast_info_struct()
-            if _snd.sf_command(_file._file, _snd.SFC_GET_BROADCAST_INFO,
-                            info, _ffi.sizeof("SF_BROADCAST_INFO")):
-                return info
-            else:
-                return None
-
-        def create_broadcast_info_struct(self):
-            info = _ffi.new("SF_BROADCAST_INFO*")
-            return info
-
-        def set_broadcast_info(self):
-            """Retrieve broadcast info chunk (BEXT)"""
-            retval = _snd.sf_command(self._file, _snd.SFC_SET_BROADCAST_INFO,
-                            self.bi, _ffi.sizeof("SF_BROADCAST_INFO"))
-            return retval
 
 def info(file, verbose=False):
     """Returns an object with information about a `SoundFile`.
@@ -1024,6 +603,407 @@ def default_subtype(format):
     _check_format(format)
     return _default_subtypes.get(format.upper())
 
+class _SoundFileInfo(object):
+    """Information about a SoundFile"""
+
+    def __init__(self, file, verbose=True):
+        self.verbose = verbose
+        with SoundFile(file) as f:
+            self.name = f.name
+            self.samplerate = f.samplerate
+            self.channels = f.channels
+            self.frames = f.frames
+            self.duration = float(self.frames)/f.samplerate
+            self.format = f.format
+            self.subtype = f.subtype
+            self.endian = f.endian
+            self.format_info = f.format_info
+            self.subtype_info = f.subtype_info
+            self.sections = f.sections
+            self.extra_info = f.extra_info
+            self.broadcast_info = None
+            self.ixml = None
+
+            try:
+                with BroadcastInfo(f) as bi:
+                    self.broadcast_info=bi
+            except:
+                pass
+
+            try:
+                with IXML(f) as _ixml:
+                    self.ixml = _ixml
+            except:
+                pass
+
+    @property
+    def _duration_str(self):
+        hours, rest = divmod(self.duration, 3600)
+        minutes, seconds = divmod(rest, 60)
+        if hours >= 1:
+            duration = "{0:.0g}:{1:02.0g}:{2:05.3f} h".format(hours, minutes, seconds)
+        elif minutes >= 1:
+            duration = "{0:02.0g}:{1:05.3f} min".format(minutes, seconds)
+        elif seconds <= 1:
+            duration = "{0:d} samples".format(self.frames)
+        else:
+            duration = "{0:.3f} s".format(seconds)
+        return duration
+
+    def __repr__(self):
+        info = "\n".join(
+            ["{0.name}",
+             "samplerate: {0.samplerate} Hz",
+             "channels: {0.channels}",
+             "duration: {0._duration_str}",
+             "format: {0.format_info} [{0.format}]",
+             "subtype: {0.subtype_info} [{0.subtype}]"])
+        if self.verbose:
+            info += "\n".join(
+                ["\nendian: {0.endian}",
+                 "sections: {0.sections}",
+                 "frames: {0.frames}",
+                 'extra_info: """',
+                 '    {1}"""'])
+        indented_extra_info = ("\n"+" "*4).join(self.extra_info.split("\n"))
+        return info.format(self, indented_extra_info)
+    
+
+class BroadcastInfo(object):
+    def __init__(self,file=None):
+        self.bi=None
+        if file is None:
+            self.bi=BroadcastInfo.createstruct()
+        else:
+            self.bi=BroadcastInfo.get(file)
+            if self.bi is None:
+                self.bi=BroadcastInfo.createstruct()
+        
+    description            = property(lambda self: _ffi.string(self.bi.description).decode('utf-8'))
+    originator             = property(lambda self: _ffi.string(self.bi.originator).decode('utf-8'))
+    originator_reference   = property(lambda self: _ffi.string(self.bi.originator_reference).decode('utf-8'))
+    origination_date       = property(lambda self: _ffi.string(self.bi.origination_date).decode('utf-8'))
+    origination_time       = property(lambda self: _ffi.string(self.bi.origination_time).decode('utf-8'))
+    time_reference         = property(lambda self: (self.bi.time_reference_high << 32) | self.bi.time_reference_low)
+    version                = property(lambda self: self.bi.version)
+    umid                   = property(lambda self: _ffi.string(self.bi.umid).decode('utf-8'))
+    loudness_value         = property(lambda self: self.bi.loudness_value)
+    loudness_range         = property(lambda self: self.bi.loudness_range)
+    max_true_peak_level    = property(lambda self: self.bi.max_true_peak_level)
+    max_momentary_loudness = property(lambda self: self.bi.max_momentary_loudness)
+    max_shortterm_loudness = property(lambda self: self.bi.max_shortterm_loudness)
+    reserved               = property(lambda self: _ffi.string(self.bi.description).decode('utf-8'))
+    coding_history_size    = property(lambda self: self.bi.coding_history_size)
+    coding_history         = property(lambda self: _ffi.string(self.bi.coding_history).decode('utf-8'))
+    
+    @description.setter
+    def description(self,newValue):
+            """
+            Property Setter for description. (char[256] array)
+            """
+            c_string = newValue.encode('utf-8') + b'\x00'
+            assert len(self.bi.description) >= len(c_string), "Buffer is too small for the string"
+            _ffi.memmove(self.bi.description, c_string, len(c_string))
+    
+    @originator.setter
+    def originator(self,newValue):
+            """
+            Property Setter for originator. (char[32] array)
+            """
+            c_string = newValue.encode('utf-8') + b'\x00'
+            assert len(self.bi.originator) >= len(c_string), "Buffer is too small for the string"
+            _ffi.memmove(self.bi.originator, c_string, len(c_string))
+    
+    @originator_reference.setter
+    def originator_reference(self,newValue):
+            """
+            Property Setter for originator_reference. (char[32] array)
+            """
+            c_string = newValue.encode('utf-8') + b'\x00'
+            assert len(self.bi.originator_reference) >= len(c_string), "Buffer is too small for the string"
+            _ffi.memmove(self.bi.originator_reference, c_string, len(c_string))
+    
+    @origination_date.setter
+    def origination_date(self,newValue):
+            """
+            Property Setter for origination_date. (char[10] array)
+            """
+            c_string = newValue.encode('utf-8') + b'\x00'
+            assert len(self.bi.origination_date) >= len(c_string), "Buffer is too small for the string"
+            _ffi.memmove(self.bi.origination_date, c_string, len(c_string))
+               
+    @origination_time.setter
+    def origination_time(self,newValue):
+            """
+            Property Setter for origination_time. (char[8] array)
+            """
+            c_string = newValue.encode('utf-8') + b'\x00'
+            assert len(self.bi.origination_time) >= len(c_string), "Buffer is too small for the string"
+            _ffi.memmove(self.bi.origination_time, c_string, len(c_string))
+               
+    @time_reference.setter
+    def time_reference(self,newValue):
+            """
+            Property Setter for time_reference.
+            """
+            mask=0xFFFFFFFF00000000
+            self.bi.time_reference_low=(newValue & ~mask)
+            self.bi.time_reference_high=(newValue & mask) >> 32
+                 
+    @version.setter
+    def version(self,newValue):
+            """
+            Property Setter for version.
+            """
+            self.bi.version=newValue
+                        
+    @umid.setter
+    def umid(self,newValue):
+            """
+            Property Setter for umid. (char[64] array)
+            """
+            c_string = newValue.encode('utf-8') + b'\x00'
+            assert len(self.bi.umid) >= len(c_string), "Buffer is too small for the string"
+            _ffi.memmove(self.bi.umid, c_string, len(c_string))
+    
+    @loudness_value.setter
+    def loudness_value(self,newValue):
+            """
+            Property Setter for loudness_value.
+            """
+            self.bi.loudness_value=newValue
+    
+    @loudness_range.setter
+    def loudness_range(self,newValue):
+            """
+            Property Setter for loudness_range.
+            """
+            self.bi.loudness_range=newValue
+         
+    @max_true_peak_level.setter
+    def max_true_peak_level(self,newValue):
+            """
+            Property Setter for max_true_peak_level.
+            """
+            self.bi.max_true_peak_level=newValue
+            
+    @max_momentary_loudness.setter
+    def max_momentary_loudness(self,newValue):
+            """
+            Property Setter for max_momentary_loudness.
+            """
+            self.bi.max_momentary_loudness=newValue
+         
+    @max_shortterm_loudness.setter
+    def max_shortterm_loudness(self,newValue):
+            """
+            Property Setter for max_shortterm_loudness.
+            """
+            self.bi.max_shortterm_loudness=newValue
+         
+    @reserved.setter
+    def reserved(self,newValue):
+            """
+            Property Setter for reserved. (char[180] array)
+            """
+            c_string = newValue.encode('utf-8') + b'\x00'
+            assert len(self.bi.reserved) >= len(c_string), "Buffer is too small for the string"
+            _ffi.memmove(self.bi.reserved, c_string, len(c_string))
+                       
+    @coding_history_size.setter
+    def coding_history_size(self,newValue):
+            """
+            Property Setter for coding_history_size.
+            Note, Coding_history_size is also set automatically when the coding_history property is set.
+            """
+            self.bi.coding_history_size=newValue
+            
+    @coding_history.setter
+    def coding_history(self,newValue):
+            """
+            Property Setter for coding_history. (char[256] array)
+            also sets coding_history_size automatically.
+            """
+            c_string = newValue.encode('utf-8') + b'\x00'
+            assert len(self.bi.coding_history) >= len(c_string), "Buffer is too small for the string"
+            _ffi.memmove(self.bi.coding_history, c_string, len(c_string))
+            self.bi.coding_history_size=len(c_string)
+                 
+    def __enter__(self):
+        # Initialize or acquire resource (e.g., open a file, connect to a database, etc.)
+        # Return self or another resource that should be used in the with-block
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+            # Clean up the resource (e.g., close a file, disconnect from a database, etc.)
+            # You can also handle exceptions here if necessary
+            # If you return True, any exception will be suppressed
+            pass
+    
+    def __repr__(self):
+            info = "\n".join(
+                ["description: {0.description}",
+                 "originator: {0.originator}",
+                 "originator_reference: {0.originator_reference}",
+                 "time_reference: {0.time_reference}",
+                 "version: {0.version}",
+                 "umid: {0.umid}",
+                 "loudness_value: {0.loudness_value}",
+                 "loudness_range: {0.loudness_range}",
+                 "max_true_peak_level: {0.max_true_peak_level}",
+                 "max_momentary_loudness: {0.max_momentary_loudness}",
+                 "max_shortterm_loudness: {0.max_shortterm_loudness}",
+                 "reserved: {0.reserved}",
+                 "coding_history_size: {0.coding_history_size}",
+                 "coding_history: {0.coding_history}"])
+
+            indented_extra_info = ("\n"+" "*4)
+            return info.format(self, indented_extra_info)
+    
+    def get(_file):
+            """Retrieve broadcast info chunk (BEXT)"""
+            info = BroadcastInfo.createstruct()
+            if _snd.sf_command(_file, _snd.SFC_GET_BROADCAST_INFO,
+                            info, _ffi.sizeof("SF_BROADCAST_INFO")):
+                return info
+            else:
+                return None
+    
+    def createstruct():
+            info = _ffi.new("SF_BROADCAST_INFO*")
+            return info
+    
+    def set(_file,_bi):
+            """Retrieve broadcast info chunk (BEXT)"""
+            retval = _snd.sf_command(_file, _snd.SFC_SET_BROADCAST_INFO,
+                            _bi.bi, _ffi.sizeof("SF_BROADCAST_INFO"))
+            return retval
+
+class IXML(object):
+    def __init__(self,file=None):
+        self._file=file
+        self._ixml=None
+        self._ixml_data_ptr=None
+        self.char_buffer=None
+        if file is None:
+            self._ixml={"BWFXML": None}
+        else:
+            self._ixml=self.get_ixml_data()
+            if self._ixml is None:
+                raise ("no ixml chunk available")
+    ixml            = property(lambda self: self._ixml)
+    @ixml.setter
+    def ixml(self,newValue):
+        """
+        Property Setter for ixml dict. 
+        """
+        # convert to XML string
+        root = self.dict_to_xml(None,newValue)
+        newxml = self.prettify(root)
+        self._chunk_info = _ffi.new("SF_CHUNK_INFO *")
+        self._chunk_info.id="iXML".encode('utf-8')
+        self._chunk_info.id_size=4
+        self._chunk_info.data = _ffi.new("char []", newxml.encode('utf-8'))
+        self._chunk_info.datalen= _ffi.sizeof(self._chunk_info.data)
+    def parse_ixml_chunk(self, chunk_data):
+            try:
+                # Parse the XML data
+                root = ET.fromstring(chunk_data)
+                return self.xml_to_dict(root)
+            except ET.ParseError:
+                return None
+            
+    def xml_to_dict(self, root, tree_dict=None):
+        if tree_dict is None:
+            tree_dict = defaultdict(list)  # Change to list for handling multiple elements
+        for element in root:
+            if len(element):  # If the element has children
+                child_dict = self.xml_to_dict(element, None)
+                tree_dict[element.tag].append(child_dict)
+            else:
+                tree_dict[element.tag].append(element.text)
+        # Convert single-item lists to just the item
+        for key in tree_dict:
+            if len(tree_dict[key]) == 1:
+                tree_dict[key] = tree_dict[key][0]
+        return tree_dict
+    
+    def dict_to_xml(tag, d):
+            '''
+            Turn a simple dict of key/value pairs into XML.
+            Handles nested dictionaries and lists of dictionaries.
+            '''
+            elem = Element(tag)
+            for key, val in d.items():
+                if isinstance(val, dict):
+                    child = dict_to_xml(key, val)
+                elif isinstance(val, list):
+                    # Handle lists of dictionaries
+                    for subdict in val:
+                        child = dict_to_xml(key, subdict)
+                        elem.append(child)
+                    continue  # Skip the elem.append(child) at the end
+                else:
+                    child = Element(key)
+                    child.text = str(val) if val is not None else ''
+                elem.append(child)
+            return elem
+    def prettify(elem):
+            '''
+            Return a pretty-printed XML string for the Element.
+            '''
+            rough_string = tostring(elem, 'utf-8')
+            reparsed = parseString(rough_string)
+            return reparsed.toxml(encoding='UTF-8').decode('UTF-8')            
+    def __enter__(self):
+            # Initialize or acquire resource (e.g., open a file, connect to a database, etc.)
+            # Return self or another resource that should be used in the with-block
+            return self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+            # Clean up the resource (e.g., close a file, disconnect from a database, etc.)
+            # You can also handle exceptions here if necessary
+            # If you return True, any exception will be suppressed
+            pass
+    
+    def __repr__(self):
+            dict_repr = repr(self._ixml)
+            return f"{self.__class__.__name__}({dict_repr})"
+
+    def get_ixml_data(self):
+            """Retrieve ixml chunk"""
+            chunk_info = _ffi.new("SF_CHUNK_INFO*")
+            chunk_info.id = "iXML".encode('utf-8')
+            chunk_info.id_size = 4
+            iterator = _snd.sf_get_chunk_iterator (self._file._file, chunk_info)
+            if (iterator is not None):
+                _snd.sf_get_chunk_size(iterator,chunk_info)
+                buffer_size = chunk_info.datalen
+
+                self.char_buffer = _ffi.new("char[]", buffer_size)
+                chunk_info.data = self.char_buffer
+
+                _snd.sf_get_chunk_data(iterator,chunk_info)
+                return self.parse_ixml_chunk(_ffi.string(self.char_buffer).decode('utf-8'))
+            else:
+                return ""            
+        
+    def create_ixml_chunk(self):
+            pass
+            #info = _ffi.new("SF_BROADCAST_INFO*")
+            #return info
+    def set_ixml_data(self):
+            """store ixml chunk (BEXT)"""
+            chunk_info = _ffi.new("SF_CHUNK_INFO*")
+            chunk_info.id = "ixml".encode('utf-8')
+            chunk_info.length = 4
+            
+            self._ixml_data_ptr=self._ixml.encode('utf-8')+b"0x00"
+            chunk_info.datalen=len(self._ixml_data_ptr)
+
+            # scope of this element could be an issue if crashing occurs.
+            chunk_info.data = _ffi.from_buffer("char[]", self._ixml_data_ptr)
+
+            _snd.sf_set_chunk(self._file._file, chunk_info)
 
 class SoundFile(object):
     """A sound file.
@@ -1184,6 +1164,20 @@ class SoundFile(object):
                         info, _ffi.sizeof(info))
         return _ffi.string(info).decode('utf-8', 'replace')
     
+
+    def get_broadcast_info(self):
+        return BroadcastInfo(self._file)
+
+    def set_broadcast_info(self, _broadcastInfo):
+        BroadcastInfo.set(self._file,_broadcastInfo)
+
+    def get_ixml(self):
+        return IXML(self._file)
+        pass
+
+    def set_ixml(self, ixml):
+        pass
+
     def get_cue_count(self):
         """Retrieve count of cues contained within file"""
         info = _ffi.new("uint32 *")
@@ -1911,8 +1905,6 @@ class SoundFile(object):
             if data:
                 strs[strtype] = _ffi.string(data).decode('utf-8', 'replace')
         return strs
-
-
 
 def _error_check(err, prefix=""):
     """Raise LibsndfileError if there is an error."""
